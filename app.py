@@ -4,14 +4,12 @@ Streamlit Web UI — Push-to-Talk & Always Listening
 Powered by Gemini Live API
 """
 import asyncio
-import io
 import os
 import queue
 import threading
 import time
 from datetime import datetime
 
-import numpy as np
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -286,27 +284,20 @@ def gemini_worker(api_key, audio_q, result_q, stop_ev):
 
 # ─── Mic background worker ────────────────────────────────
 def mic_worker(audio_q, stop_ev, rec_ev, always_on):
-    """Background thread: PyAudio mic capture (local only)."""
-    try:
-        import pyaudio
-    except ImportError:
-        return  # No pyaudio → use browser audio_input instead
+    """Background thread: PyAudio mic capture."""
+    import pyaudio
 
     RATE = 16000
     CHUNK = 800  # 50 ms — smaller chunks for faster VAD response
 
     p = pyaudio.PyAudio()
-    try:
-        stream = p.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=RATE,
-            input=True,
-            frames_per_buffer=CHUNK,
-        )
-    except Exception:
-        p.terminate()
-        return  # No mic device available (e.g. Streamlit Cloud)
+    stream = p.open(
+        format=pyaudio.paInt16,
+        channels=1,
+        rate=RATE,
+        input=True,
+        frames_per_buffer=CHUNK,
+    )
 
     try:
         while not stop_ev.is_set():
@@ -523,56 +514,6 @@ if st.session_state.gemini_connected and st.session_state.mode == "push_to_talk"
                 st.session_state.recording_event.clear()
                 st.session_state.is_recording = False
                 st.rerun()
-
-# ─── Browser Audio Input (Streamlit Cloud fallback) ───────
-# Use st.audio_input when pyaudio is unavailable (no mic on server)
-if st.session_state.gemini_connected:
-    _has_pyaudio = False
-    try:
-        import pyaudio
-        p_test = pyaudio.PyAudio()
-        try:
-            p_test.get_default_input_device_info()
-            _has_pyaudio = True
-        except Exception:
-            pass
-        p_test.terminate()
-    except Exception:
-        pass
-
-    if not _has_pyaudio:
-        st.markdown("---")
-        st.markdown("### 🎤 Browser Microphone")
-        audio_bytes = st.audio_input("กดปุ่มไมค์เพื่อพูด แล้วกดหยุดเมื่อจบ")
-        if audio_bytes is not None:
-            # Convert WAV bytes → raw PCM int16 at 16kHz and push to queue
-            import wave, struct
-            raw = audio_bytes.read()
-            try:
-                with wave.open(io.BytesIO(raw)) as wf:
-                    n_ch = wf.getnchannels()
-                    src_rate = wf.getframerate()
-                    pcm = wf.readframes(wf.getnframes())
-                # Convert to numpy int16
-                samples = np.frombuffer(pcm, dtype=np.int16)
-                # Mix down to mono if stereo
-                if n_ch > 1:
-                    samples = samples.reshape(-1, n_ch).mean(axis=1).astype(np.int16)
-                # Resample to 16kHz if needed (simple linear interp)
-                if src_rate != 16000:
-                    duration = len(samples) / src_rate
-                    target_len = int(duration * 16000)
-                    xs = np.linspace(0, len(samples) - 1, target_len)
-                    samples = np.interp(xs, np.arange(len(samples)), samples).astype(np.int16)
-                # Push in 50ms chunks (800 samples @ 16kHz)
-                CHUNK = 800
-                for i in range(0, len(samples), CHUNK):
-                    chunk = samples[i:i + CHUNK]
-                    if len(chunk) < CHUNK:
-                        chunk = np.pad(chunk, (0, CHUNK - len(chunk)))
-                    st.session_state.audio_queue.put(chunk.tobytes())
-            except Exception as e:
-                st.warning(f"Audio processing error: {e}")
 
 
 # ─── Transcript area ──────────────────────────────────────
