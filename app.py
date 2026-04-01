@@ -285,68 +285,15 @@ def gemini_worker(api_key, audio_q, result_q, stop_ev):
         loop.close()
 
 
-# ─── Detect if server-side mic is available ───────────────
-def _has_server_mic() -> bool:
-    """True only when pyaudio + a real input device exists (local dev).
-    Always returns False on cloud — pyaudio is not installed there."""
-    try:
-        import importlib.util
-        if importlib.util.find_spec("pyaudio") is None:
-            return False
-        import pyaudio  # noqa: PLC0415
-        p = pyaudio.PyAudio()
-        try:
-            p.get_default_input_device_info()
-            return True
-        except Exception:
-            return False
-        finally:
-            p.terminate()
-    except Exception:
-        return False
-
-try:
-    SERVER_MIC = _has_server_mic()
-except Exception:
-    SERVER_MIC = False
+# ─── Server mic is NEVER available on cloud ───────────────
+# pyaudio is not installed — browser mic (st.audio_input) is used instead
+SERVER_MIC = False
 
 
-# ─── Mic background worker ────────────────────────────────
+# ─── Mic background worker (no-op on cloud) ───────────────
 def mic_worker(audio_q, stop_ev, rec_ev, always_on):
-    """Background thread: PyAudio mic capture (local only)."""
-    if not SERVER_MIC:
-        return   # Cloud: browser will supply audio via st.audio_input()
-
-    try:
-        import pyaudio
-    except ImportError:
-        return
-
-    RATE = 16000
-    CHUNK = 800  # 50 ms
-
-    p = pyaudio.PyAudio()
-    stream = p.open(
-        format=pyaudio.paInt16,
-        channels=1,
-        rate=RATE,
-        input=True,
-        frames_per_buffer=CHUNK,
-    )
-    try:
-        while not stop_ev.is_set():
-            if always_on or rec_ev.is_set():
-                try:
-                    data = stream.read(CHUNK, exception_on_overflow=False)
-                    audio_q.put(data)
-                except OSError:
-                    pass
-            else:
-                time.sleep(0.05)
-    finally:
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
+    """Placeholder — audio comes from st.audio_input() in browser."""
+    return
 
 
 # ─── Helper functions ──────────────────────────────────────
