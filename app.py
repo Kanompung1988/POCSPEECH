@@ -287,9 +287,13 @@ def gemini_worker(api_key, audio_q, result_q, stop_ev):
 
 # ─── Detect if server-side mic is available ───────────────
 def _has_server_mic() -> bool:
-    """True only when pyaudio + a real input device exists (local dev)."""
+    """True only when pyaudio + a real input device exists (local dev).
+    Always returns False on cloud — pyaudio is not installed there."""
     try:
-        import pyaudio
+        import importlib.util
+        if importlib.util.find_spec("pyaudio") is None:
+            return False
+        import pyaudio  # noqa: PLC0415
         p = pyaudio.PyAudio()
         try:
             p.get_default_input_device_info()
@@ -301,7 +305,10 @@ def _has_server_mic() -> bool:
     except Exception:
         return False
 
-SERVER_MIC = _has_server_mic()
+try:
+    SERVER_MIC = _has_server_mic()
+except Exception:
+    SERVER_MIC = False
 
 
 # ─── Mic background worker ────────────────────────────────
@@ -310,7 +317,11 @@ def mic_worker(audio_q, stop_ev, rec_ev, always_on):
     if not SERVER_MIC:
         return   # Cloud: browser will supply audio via st.audio_input()
 
-    import pyaudio
+    try:
+        import pyaudio
+    except ImportError:
+        return
+
     RATE = 16000
     CHUNK = 800  # 50 ms
 
