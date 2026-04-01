@@ -4,12 +4,15 @@ Streamlit Web UI — Push-to-Talk & Always Listening
 Powered by Gemini Live API
 """
 import asyncio
+import io
 import os
 import queue
 import threading
 import time
+import wave
 from datetime import datetime
 
+import numpy as np
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -282,13 +285,34 @@ def gemini_worker(api_key, audio_q, result_q, stop_ev):
         loop.close()
 
 
+# ─── Detect if server-side mic is available ───────────────
+def _has_server_mic() -> bool:
+    """True only when pyaudio + a real input device exists (local dev)."""
+    try:
+        import pyaudio
+        p = pyaudio.PyAudio()
+        try:
+            p.get_default_input_device_info()
+            return True
+        except Exception:
+            return False
+        finally:
+            p.terminate()
+    except Exception:
+        return False
+
+SERVER_MIC = _has_server_mic()
+
+
 # ─── Mic background worker ────────────────────────────────
 def mic_worker(audio_q, stop_ev, rec_ev, always_on):
-    """Background thread: PyAudio mic capture."""
-    import pyaudio
+    """Background thread: PyAudio mic capture (local only)."""
+    if not SERVER_MIC:
+        return   # Cloud: browser will supply audio via st.audio_input()
 
+    import pyaudio
     RATE = 16000
-    CHUNK = 800  # 50 ms — smaller chunks for faster VAD response
+    CHUNK = 800  # 50 ms
 
     p = pyaudio.PyAudio()
     stream = p.open(
@@ -298,7 +322,6 @@ def mic_worker(audio_q, stop_ev, rec_ev, always_on):
         input=True,
         frames_per_buffer=CHUNK,
     )
-
     try:
         while not stop_ev.is_set():
             if always_on or rec_ev.is_set():
@@ -514,6 +537,34 @@ if st.session_state.gemini_connected and st.session_state.mode == "push_to_talk"
                 st.session_state.recording_event.clear()
                 st.session_state.is_recording = False
                 st.rerun()
+
+# ─── Browser Mic (Cloud / no server mic) ──────────────────
+if st.session_state.gemini_connected and not SERVER_MIC:
+    st.markdown("---")
+    st.markdown("### 🎤 กดปุ่มไมค์เพื่อพูด")
+    audio_bytes = st.audio_input("อัดเสียงแล้วกดหยุด — ระบบจะแปลให้อัตโนมัติ")
+    if audio_bytes is not None:
+        raw = audio_bytes.read()
+        try:
+            with wave.open(io.BytesIO(raw)) as wf:
+                n_ch = wf.getnchannels()
+                src_rate = wf.getframerate()
+                pcm = wf.readframes(wf.getnframes())
+            samples = np.frombuffer(pcm, dtype=np.int16)
+            if n_ch > 1:
+                samples = samples.reshape(-1, n_ch).mean(axis=1).astype(np.int16)
+            if src_rate != 16000:
+                target_len = int(len(samples) * 16000 / src_rate)
+                xs = np.linspace(0, len(samples) - 1, target_len)
+                samples = np.interp(xs, np.arange(len(samples)), samples).astype(np.int16)
+            CHUNK = 800
+            for i in range(0, len(samples), CHUNK):
+                chunk = samples[i:i + CHUNK]
+                if len(chunk) < CHUNK:
+                    chunk = np.pad(chunk, (0, CHUNK - len(chunk)))
+                st.session_state.audio_queue.put(chunk.tobytes())
+        except Exception as e:
+            st.warning(f"⚠️ Audio error: {e}")
 
 
 # ─── Transcript area ──────────────────────────────────────
